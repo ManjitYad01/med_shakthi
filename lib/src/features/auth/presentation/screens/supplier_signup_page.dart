@@ -2,10 +2,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter/services.dart';
 import 'package:med_shakthi/src/core/api/supabase_service.dart';
+import 'package:med_shakthi/src/core/utils/indian_validators.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-// Assuming SupplierDashboard is located here based on your project structure
-import 'package:med_shakthi/src/features/dashboard/supplier_dashboard.dart';
+import 'package:med_shakthi/main.dart'; // Import RootRouter
+import 'package:med_shakthi/src/core/utils/custom_snackbar.dart';
 
 class SupplierSignupPage extends StatefulWidget {
   const SupplierSignupPage({super.key});
@@ -18,16 +20,20 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = false;
   final SupabaseClient supabase = Supabase.instance.client;
+  static const String _countryCode = '+91';
 
+  bool _isFormValid = false;
 
   // Controllers
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _countryController = TextEditingController(text: 'India');
-  final _stateController = TextEditingController();
+
   final _cityController = TextEditingController();
   final _pincodeController = TextEditingController();
+
+  String? _selectedState;
   final _companyNameController = TextEditingController();
   final _companyAddressController = TextEditingController();
   final _drugLicenseNumberController = TextEditingController();
@@ -48,12 +54,36 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _registerListeners();
+  }
+
+  void _registerListeners() {
+    _nameController.addListener(_checkValidity);
+    _emailController.addListener(_checkValidity);
+    _phoneController.addListener(_checkValidity);
+    _countryController.addListener(_checkValidity);
+
+    // State handled by onChanged
+    _cityController.addListener(_checkValidity);
+    _pincodeController.addListener(_checkValidity);
+    _companyNameController.addListener(_checkValidity);
+    _companyAddressController.addListener(_checkValidity);
+    _drugLicenseNumberController.addListener(_checkValidity);
+    _gstNumberController.addListener(_checkValidity);
+    _panNumberController.addListener(_checkValidity);
+    _passwordController.addListener(_checkValidity);
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
     _countryController.dispose();
-    _stateController.dispose();
+
+    // _stateController removed
     _cityController.dispose();
     _pincodeController.dispose();
     _companyNameController.dispose();
@@ -75,6 +105,7 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
     if (picked != null) {
       setState(() {
         _selectedExpiryDate = picked;
+        _checkValidity();
       });
     }
   }
@@ -89,6 +120,7 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
       setState(() {
         _selectedDocument = File(result.files.single.path!);
         _documentPath = result.files.single.name;
+        _checkValidity();
       });
     }
   }
@@ -96,7 +128,6 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
   Future<void> _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // ... (Validation checks remain the same) ...
     if (_selectedCompanyType == null) {
       _showError('Please select company type');
       return;
@@ -110,13 +141,62 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
       return;
     }
 
+    // ━━ Pre-check: email already registered? ━━━━━━━━━━━━━━━━━━━━━━
+    // Do this BEFORE uploading the document to avoid the RLS 403 error.
+    try {
+      final emailExists = await supabase.rpc(
+        'check_email_exists',
+        params: {'p_email': _emailController.text.trim()},
+      );
+      if (emailExists == true) {
+        if (!mounted) return;
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Email Already Registered'),
+            content: const Text(
+              'An account with this email already exists.\nPlease log in or use a different email.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Use Different Email'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4C8077),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).popUntil((route) => route.isFirst);
+                },
+                child: const Text('Go to Login'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    } catch (_) {
+      // If RPC fails for any reason, proceed with signup and let Supabase catch duplicates.
+    }
+
+    RootRouter.suppressAuthRedirect = true;
     setState(() => _isLoading = true);
 
     try {
+      final String phone = '$_countryCode${_phoneController.text.trim()}';
+
       // 🔐 STEP 1: AUTH SIGNUP
       final authResponse = await supabase.auth.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
+        data: {
+          'full_name': _nameController.text.trim(),
+          'phone': phone,
+          'role': 'supplier',
+        },
       );
 
       final user = authResponse.user;
@@ -124,7 +204,8 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
       final userId = user.id;
 
       // 📂 STEP 2: UPLOAD DOCUMENT
-      final fileName = 'drug_license_${userId}_${DateTime.now().millisecondsSinceEpoch}';
+      final fileName =
+          'drug_license_${userId}_${DateTime.now().millisecondsSinceEpoch}';
       final documentUrl = await SupabaseService.uploadDocument(
         bucket: 'drug-licenses',
         file: _selectedDocument!,
@@ -132,7 +213,8 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
       );
 
       // 🧾 STEP 3: INSERT INTO SUPPLIERS TABLE
-      await supabase.from('suppliers').insert({
+      // Use upsert to handle potential conflicts
+      await supabase.from('suppliers').upsert({
         'user_id': userId,
         'name': _nameController.text.trim(),
         'email': _emailController.text.trim(),
@@ -140,9 +222,9 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
         // ✅ ADDED THIS BACK to satisfy the "NOT NULL" database constraint
         'password': _passwordController.text.trim(),
 
-        'phone': _phoneController.text.trim(),
+        'phone': phone,
         'country': _countryController.text.trim(),
-        'state': _stateController.text.trim(),
+        'state': _selectedState,
         'city': _cityController.text.trim(),
         'pincode': _pincodeController.text.trim(),
         'company_name': _companyNameController.text.trim(),
@@ -154,23 +236,38 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
         'gst_number': _gstNumberController.text.trim(),
         'pan_number': _panNumberController.text.trim(),
         'verification_status': 'PENDING',
-      });
+      }, onConflict: 'user_id');
+
+      RootRouter.suppressAuthRedirect = false;
 
       // ✅ SUCCESS UI & NAVIGATION
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Registration Submitted! Welcome.'), backgroundColor: Colors.green),
-        );
-
-        // Navigate to Supplier Dashboard
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const SupplierDashboard()),
-              (route) => false,
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Registration Submitted'),
+            content: const Text(
+              'Welcome to Med Shakthi!\n\nPlease check your email to verify your account. You must verify your email before logging in.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context); // Close dialog
+                  // Pop back to RootRouter
+                  Navigator.of(context).popUntil((route) => route.isFirst);
+                },
+                child: const Text('OK'),
+              ),
+            ],
+          ),
         );
       }
     } on AuthException catch (e) {
+      RootRouter.suppressAuthRedirect = false;
       _showError(e.message);
     } catch (e) {
+      RootRouter.suppressAuthRedirect = false;
       _showError(e.toString());
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -178,176 +275,328 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.redAccent),
-    );
+    showCustomSnackBar(context, message, isError: true);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFEAF4F2), Color(0xFFF6FBFA)],
+            colors: Theme.of(context).brightness == Brightness.dark
+                ? [const Color(0xFF1A1A1A), const Color(0xFF121212)]
+                : [const Color(0xFFEAF4F2), const Color(0xFFF6FBFA)],
           ),
         ),
         child: SafeArea(
           child: _isLoading
               ? const Center(child: CircularProgressIndicator())
               : SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 24,
-              vertical: 20,
-            ),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(
-                      Icons.arrow_back_ios_new,
-                      color: Color(0xFF6AA39B),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 20,
+                  ),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(
+                            Icons.arrow_back_ios_new,
+                            color: Color(0xFF6AA39B),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'Supplier Registration',
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: -0.5,
+                            color: Theme.of(
+                              context,
+                            ).textTheme.titleLarge?.color,
+                          ),
+                        ),
+                        Text(
+                          'Join our network and grow your business',
+                          style: TextStyle(
+                            color: Theme.of(context).textTheme.bodyMedium?.color
+                                ?.withValues(alpha: 0.7),
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 30),
+
+                        _sectionTitle('Basic Info'),
+                        _buildTextField(
+                          _nameController,
+                          'Contact Person Name',
+                          Icons.person,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter contact person name';
+                            }
+                            final words = value
+                                .trim()
+                                .split(RegExp(r'\s+'))
+                                .where((w) => w.isNotEmpty)
+                                .length;
+                            if (words < 2) {
+                              return 'Enter at least first and last name';
+                            }
+                            return null;
+                          },
+                        ),
+                        _buildTextField(
+                          _emailController,
+                          'Email Address',
+                          Icons.email,
+                          keyboardType: TextInputType.emailAddress,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter email address';
+                            }
+                            final emailRegex = RegExp(
+                              r'^[\w\-\.+]+@[\w\-]+\.[a-zA-Z]{2,}$',
+                            );
+                            if (!emailRegex.hasMatch(value.trim())) {
+                              return 'Enter a valid email (e.g. name@example.com)';
+                            }
+                            return null;
+                          },
+                        ),
+                        _buildTextField(
+                          _phoneController,
+                          'Phone Number',
+                          Icons.phone,
+                          prefixText: '$_countryCode ',
+                          keyboardType: TextInputType.phone,
+                          maxLength: 10,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          validator: IndianValidators.validateMobile,
+                        ),
+                        _buildTextField(
+                          _passwordController,
+                          'Password',
+                          Icons.lock,
+                          keyboardType: TextInputType.visiblePassword,
+                          validator: (value) =>
+                              value != null && value.length >= 6
+                              ? null
+                              : 'Min 6 characters',
+                        ),
+
+                        const SizedBox(height: 20),
+                        _sectionTitle('Location'),
+                        _buildTextField(
+                          _countryController,
+                          'Country',
+                          Icons.public,
+                          readOnly: true,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: DropdownButtonFormField<String>(
+                            initialValue: _selectedState,
+                            menuMaxHeight: 300, // UX Fix: Limit height
+                            isExpanded: true, // UX Fix: Prevent overflow
+                            decoration: InputDecoration(
+                              labelText: 'State',
+                              prefixIcon: const Icon(Icons.map, size: 20),
+                              filled: true,
+                              fillColor: Theme.of(context).cardColor,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(30),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            items: IndianValidators.indianStates.map((state) {
+                              return DropdownMenuItem(
+                                value: state,
+                                child: Text(
+                                  state,
+                                  overflow: TextOverflow
+                                      .ellipsis, // UX Fix: Truncate text
+                                  maxLines: 1,
+                                ),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              setState(() => _selectedState = value);
+                              _checkValidity();
+                            },
+                            validator: (value) =>
+                                value == null ? 'Select State' : null,
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).textTheme.bodyLarge?.color,
+                            ),
+                            dropdownColor: Theme.of(context).cardColor,
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildTextField(
+                                _cityController,
+                                'City',
+                                Icons.location_city,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(
+                                    RegExp(r'[a-zA-Z\s]'),
+                                  ),
+                                ],
+                                validator: IndianValidators.validateCity,
+                              ),
+                            ),
+                            const SizedBox(width: 15),
+                            Expanded(
+                              child: _buildTextField(
+                                _pincodeController,
+                                'Pincode',
+                                Icons.pin_drop,
+                                keyboardType: TextInputType.number,
+                                maxLength: 6,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                ],
+                                validator: IndianValidators.validatePincode,
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 20),
+                        _sectionTitle('Business Details'),
+                        _buildTextField(
+                          _companyNameController,
+                          'Company Name',
+                          Icons.business,
+                        ),
+                        _buildDropdown(),
+                        _buildTextField(
+                          _companyAddressController,
+                          'Full Business Address',
+                          Icons.home_work,
+                          maxLines: 3,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter business address';
+                            }
+                            final wordCount = value
+                                .trim()
+                                .split(RegExp(r'\s+'))
+                                .where((w) => w.isNotEmpty)
+                                .length;
+                            if (wordCount < 3) {
+                              return 'Address must be at least 3 words';
+                            }
+                            return null;
+                          },
+                        ),
+
+                        const SizedBox(height: 20),
+                        _sectionTitle('Legal & Documents'),
+                        _buildTextField(
+                          _drugLicenseNumberController,
+                          'Drug License Number',
+                          Icons.description,
+                          validator: IndianValidators.validateDrugLicenseNumber,
+                        ),
+                        _buildDatePicker(),
+                        const SizedBox(height: 10),
+                        _buildFilePicker(),
+                        const SizedBox(height: 20),
+                        _buildTextField(
+                          _gstNumberController,
+                          'GST Number',
+                          Icons.receipt_long,
+                          textCapitalization: TextCapitalization.characters,
+                          maxLength:
+                              15, // PROMPT: Restrict GSTIN Input (Max 15 chars)
+                          inputFormatters: [
+                            UpperCaseTextFormatter(),
+                            FilteringTextInputFormatter.allow(
+                              RegExp(r'[A-Z0-9]'),
+                            ), // Strict alphanumeric
+                          ],
+                          autovalidateMode: AutovalidateMode.onUserInteraction,
+                          // validator: IndianValidators.validateGSTIN, // Commented for testing
+                          validator: (value) => value == null || value.isEmpty
+                              ? 'Enter GST Number'
+                              : null,
+                        ),
+                        _buildTextField(
+                          _panNumberController,
+                          'PAN Number',
+                          Icons.credit_card,
+                          textCapitalization: TextCapitalization.characters,
+                          maxLength: 10,
+                          inputFormatters: [UpperCaseTextFormatter()],
+                          autovalidateMode: AutovalidateMode.onUserInteraction,
+                          // validator: IndianValidators.validatePAN, // Commented for testing
+                          validator: (value) => value == null || value.isEmpty
+                              ? 'Enter PAN Number'
+                              : null,
+                        ),
+
+                        const SizedBox(height: 40),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(30),
+                              boxShadow: _isFormValid
+                                  ? [
+                                      BoxShadow(
+                                        color: const Color(
+                                          0xFF6AA39B,
+                                        ).withValues(alpha: 0.4),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 4),
+                                      ),
+                                    ]
+                                  : [],
+                            ),
+                            child: ElevatedButton(
+                              onPressed: _isFormValid ? _submitForm : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _isFormValid
+                                    ? const Color(0xFF6AA39B)
+                                    : Theme.of(context).disabledColor,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(30),
+                                ),
+                                elevation: 0,
+                              ),
+                              child: const Text(
+                                'Submit for Verification',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 30),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Supplier Registration',
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  const Text(
-                    'Join our network and grow your business',
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
-                  ),
-                  const SizedBox(height: 30),
-
-                  _sectionTitle('Basic Info'),
-                  _buildTextField(
-                    _nameController,
-                    'Contact Person Name',
-                    Icons.person,
-                  ),
-                  _buildTextField(
-                    _emailController,
-                    'Email Address',
-                    Icons.email,
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  _buildTextField(
-                    _phoneController,
-                    'Phone Number',
-                    Icons.phone,
-                    keyboardType: TextInputType.phone,
-                  ),
-                  _buildTextField(
-                    _passwordController,
-                    'Password',
-                    Icons.lock,
-                    keyboardType: TextInputType.visiblePassword,
-                  ),
-
-                  const SizedBox(height: 20),
-                  _sectionTitle('Location'),
-                  _buildTextField(
-                    _countryController,
-                    'Country',
-                    Icons.public,
-                  ),
-                  _buildTextField(_stateController, 'State', Icons.map),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildTextField(
-                          _cityController,
-                          'City',
-                          Icons.location_city,
-                        ),
-                      ),
-                      const SizedBox(width: 15),
-                      Expanded(
-                        child: _buildTextField(
-                          _pincodeController,
-                          'Pincode',
-                          Icons.pin_drop,
-                          keyboardType: TextInputType.number,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 20),
-                  _sectionTitle('Business Details'),
-                  _buildTextField(
-                    _companyNameController,
-                    'Company Name',
-                    Icons.business,
-                  ),
-                  _buildDropdown(),
-                  _buildTextField(
-                    _companyAddressController,
-                    'Full Business Address',
-                    Icons.home_work,
-                    maxLines: 3,
-                  ),
-
-                  const SizedBox(height: 20),
-                  _sectionTitle('Legal & Documents'),
-                  _buildTextField(
-                    _drugLicenseNumberController,
-                    'Drug License Number',
-                    Icons.description,
-                  ),
-                  _buildDatePicker(),
-                  const SizedBox(height: 10),
-                  _buildFilePicker(),
-                  const SizedBox(height: 20),
-                  _buildTextField(
-                    _gstNumberController,
-                    'GST Number',
-                    Icons.receipt_long,
-                  ),
-                  _buildTextField(
-                    _panNumberController,
-                    'PAN Number',
-                    Icons.credit_card,
-                  ),
-
-                  const SizedBox(height: 40),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: ElevatedButton(
-                      onPressed: _submitForm,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF6AA39B),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30),
-                        ),
-                        elevation: 2,
-                      ),
-                      child: const Text(
-                        'Submit for Verification',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 30),
-                ],
-              ),
-            ),
-          ),
+                ),
         ),
       ),
     );
@@ -369,23 +618,40 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
   }
 
   Widget _buildTextField(
-      TextEditingController controller,
-      String label,
-      IconData icon, {
-        TextInputType keyboardType = TextInputType.text,
-        int maxLines = 1,
-      }) {
+    TextEditingController controller,
+    String label,
+    IconData icon, {
+    TextInputType keyboardType = TextInputType.text,
+    int maxLines = 1,
+    String? prefixText,
+    int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
+    String? Function(String?)? validator,
+    AutovalidateMode? autovalidateMode,
+    bool readOnly = false,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: TextFormField(
         controller: controller,
         keyboardType: keyboardType,
         maxLines: maxLines,
+        readOnly: readOnly,
+        textCapitalization: textCapitalization,
+        inputFormatters: inputFormatters,
+        maxLength: maxLength,
+        autovalidateMode:
+            autovalidateMode ??
+            AutovalidateMode
+                .onUserInteraction, // PROMPT: Enable Real-time Error Highlights (All Fields)
         decoration: InputDecoration(
           labelText: label,
           prefixIcon: Icon(icon, size: 20),
+          prefixText: prefixText,
+          counterText: '',
           filled: true,
-          fillColor: Colors.white,
+          fillColor: Theme.of(context).cardColor,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(30),
             borderSide: BorderSide.none,
@@ -396,8 +662,12 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
           ),
           contentPadding: const EdgeInsets.all(16),
         ),
-        validator: (value) =>
-        value == null || value.isEmpty ? 'This field is required' : null,
+        validator:
+            validator ??
+            (value) => value == null || value.isEmpty
+                ? 'This field is required'
+                : null,
+        style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
       ),
     );
   }
@@ -406,23 +676,33 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<String>(
-        value: _selectedCompanyType,
+        initialValue: _selectedCompanyType,
+        isExpanded: true, // UX Fix: Prevent overflow
+        menuMaxHeight: 300, // UX Fix: Limit height
         decoration: InputDecoration(
           labelText: 'Company Type',
           prefixIcon: const Icon(Icons.category, size: 20),
           filled: true,
-          fillColor: Colors.white,
+          fillColor: Theme.of(context).cardColor,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(30),
             borderSide: BorderSide.none,
           ),
         ),
         items: _companyTypes.map((type) {
-          return DropdownMenuItem(value: type, child: Text(type));
+          return DropdownMenuItem(
+            value: type,
+            child: Text(type, overflow: TextOverflow.ellipsis, maxLines: 1),
+          );
         }).toList(),
-        onChanged: (value) => setState(() => _selectedCompanyType = value),
+        onChanged: (value) {
+          setState(() => _selectedCompanyType = value);
+          _checkValidity();
+        },
         validator: (value) =>
-        value == null ? 'Please select company type' : null,
+            value == null ? 'Please select company type' : null,
+        style: TextStyle(color: Theme.of(context).textTheme.bodyLarge?.color),
+        dropdownColor: Theme.of(context).cardColor,
       ),
     );
   }
@@ -434,12 +714,16 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         margin: const EdgeInsets.only(bottom: 16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(30),
         ),
         child: Row(
           children: [
-            Icon(Icons.calendar_today, size: 20, color: Colors.grey[600]),
+            Icon(
+              Icons.calendar_today,
+              size: 20,
+              color: Theme.of(context).iconTheme.color?.withValues(alpha: 0.6),
+            ),
             const SizedBox(width: 12),
             Text(
               _selectedExpiryDate == null
@@ -447,8 +731,10 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
                   : 'Expiry: ${DateFormat('dd MMM yyyy').format(_selectedExpiryDate!)}',
               style: TextStyle(
                 color: _selectedExpiryDate == null
-                    ? Colors.grey[700]
-                    : Colors.black,
+                    ? Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.color?.withValues(alpha: 0.6)
+                    : Theme.of(context).textTheme.bodyLarge?.color,
                 fontSize: 16,
               ),
             ),
@@ -465,10 +751,10 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
         width: double.infinity,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: const Color(0xFF6AA39B).withOpacity(0.05),
+          color: const Color(0xFF6AA39B).withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: const Color(0xFF6AA39B).withOpacity(0.2),
+            color: const Color(0xFF6AA39B).withValues(alpha: 0.2),
             style: BorderStyle.solid,
           ),
         ),
@@ -488,13 +774,55 @@ class _SupplierSignupPageState extends State<SupplierSignupPage> {
                 fontWeight: FontWeight.w500,
               ),
             ),
-            const Text(
+            Text(
               '(PDF, JPG, PNG up to 5MB)',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
+              style: TextStyle(
+                color: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.color?.withValues(alpha: 0.5),
+                fontSize: 12,
+              ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  void _checkValidity() {
+    final isValid =
+        _nameController.text.isNotEmpty &&
+        _emailController.text.contains('@') &&
+        _phoneController.text.length == 10 &&
+        _passwordController.text.length >= 6 &&
+        _countryController.text.isNotEmpty &&
+        _selectedState != null &&
+        _cityController.text.isNotEmpty &&
+        _pincodeController.text.isNotEmpty &&
+        _companyNameController.text.isNotEmpty &&
+        _selectedCompanyType != null &&
+        _companyAddressController.text.isNotEmpty &&
+        _drugLicenseNumberController.text.isNotEmpty &&
+        _selectedExpiryDate != null &&
+        _selectedDocument != null &&
+        _gstNumberController.text.isNotEmpty &&
+        _panNumberController.text.isNotEmpty;
+
+    if (isValid != _isFormValid) {
+      setState(() => _isFormValid = isValid);
+    }
+  }
+}
+
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
     );
   }
 }

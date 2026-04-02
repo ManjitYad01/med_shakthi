@@ -1,11 +1,18 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:med_shakthi/src/features/checkout/presentation/screens/AddressStore.dart';
+import 'package:image_cropper/image_cropper.dart';
+import 'package:med_shakthi/src/features/profile/presentation/screens/settings_page.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:med_shakthi/src/features/auth/presentation/screens/login_page.dart';
-import 'settings_page.dart';
+import 'package:med_shakthi/src/core/utils/app_constants.dart';
+import 'package:med_shakthi/src/features/support/presentation/screens/support_webview_screen.dart';
+import 'package:med_shakthi/src/features/checkout/presentation/screens/address_management_screen.dart';
+import 'package:med_shakthi/src/features/checkout/presentation/screens/payment_method_screen.dart';
+import 'package:med_shakthi/src/features/cart/data/cart_data.dart';
+import '../../../orders/orders_page.dart';
 
 class AccountPage extends StatefulWidget {
   const AccountPage({super.key});
@@ -19,116 +26,62 @@ class _AccountPageState extends State<AccountPage> {
   final _picker = ImagePicker();
 
   File? _profileImage;
-
+  String? _avatarUrl;
   bool _isLoading = false;
+  bool _isUploadingAvatar = false;
 
-  String _email = "Loading...";
-  String _displayName = "User";
-  String _phone = "";
-
-  //  Address fields
-  String _addressLine1 = "";
-  String _addressLine2 = "";
-  String _city = "";
-  String _state = "";
-  String _pincode = "";
-
-  //  Orders list
-  List<Map<String, dynamic>> _orders = [];
-  bool _ordersLoading = false;
+  String _email = '';
+  String _displayName = 'User';
+  String _phone = '';
 
   @override
   void initState() {
     super.initState();
     _fetchUserData();
-    _fetchOrders();
   }
 
   Future<void> _fetchUserData() async {
     setState(() => _isLoading = true);
-
     final user = supabase.auth.currentUser;
-
     if (user == null) {
       setState(() => _isLoading = false);
       return;
     }
-
     try {
       final metaName =
           user.userMetadata?['name'] ?? user.userMetadata?['full_name'];
-
       setState(() {
-        _email = user.email ?? "";
-        _phone = user.phone ?? "";
+        _email = user.email ?? '';
+        _phone = user.phone ?? '';
         _displayName =
-            metaName ?? (_email.isNotEmpty ? _email.split('@')[0] : "User");
+            metaName ?? (_email.isNotEmpty ? _email.split('@')[0] : 'User');
       });
-
-      //  Fetch from users table
       final data = await supabase
           .from('users')
           .select()
           .eq('id', user.id)
           .maybeSingle();
-
       if (data != null && mounted) {
         setState(() {
           _displayName = data['name'] ?? _displayName;
           _phone = data['phone'] ?? _phone;
-
-          _addressLine1 = data['address_line1'] ?? "";
-          _addressLine2 = data['address_line2'] ?? "";
-          _city = data['city'] ?? "";
-          _state = data['state'] ?? "";
-          _pincode = data['pincode'] ?? "";
+          _avatarUrl = data['avatar_url'] as String?;
         });
       }
     } catch (_) {}
-
     if (mounted) setState(() => _isLoading = false);
-  }
-
-  Future<void> _fetchOrders() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return;
-
-    setState(() => _ordersLoading = true);
-
-    try {
-      final data = await supabase
-          .from('orders')
-          .select()
-          .eq('user_id', user.id)
-          .order('created_at', ascending: false);
-
-      if (mounted) {
-        setState(() {
-          _orders = List<Map<String, dynamic>>.from(data);
-        });
-      }
-    } catch (e) {
-      debugPrint("Orders Error: $e");
-    } finally {
-      if (mounted) setState(() => _ordersLoading = false);
-    }
   }
 
   Future<void> _handleLogout() async {
     setState(() => _isLoading = true);
     try {
+      context.read<CartData>().clearLocalStateOnly();
       await supabase.auth.signOut();
-      if (!mounted) return;
-
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginPage()),
-        (route) => false,
-      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text("Logout failed: $e")));
+        ).showSnackBar(SnackBar(content: Text('Logout failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -138,390 +91,840 @@ class _AccountPageState extends State<AccountPage> {
   Future<void> _pickProfileImage() async {
     final picked = await _picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 75,
+      imageQuality: 90,
     );
-    if (picked != null) {
-      setState(() => _profileImage = File(picked.path));
+    if (picked == null) return;
+
+    final croppedFile = await ImageCropper().cropImage(
+      sourcePath: picked.path,
+      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Crop Profile Photo',
+          toolbarColor: const Color(0xFF4C8077),
+          toolbarWidgetColor: Colors.white,
+          initAspectRatio: CropAspectRatioPreset.square,
+          lockAspectRatio: true,
+          hideBottomControls: true,
+        ),
+        IOSUiSettings(
+          title: 'Crop Profile Photo',
+          aspectRatioLockEnabled: true,
+          resetAspectRatioEnabled: false,
+          aspectRatioPickerButtonHidden: true,
+        ),
+      ],
+    );
+    if (croppedFile == null) return;
+
+    setState(() {
+      _profileImage = File(croppedFile.path);
+      _isUploadingAvatar = true;
+    });
+
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+
+      final rawBytes = await croppedFile.readAsBytes();
+      final compressed = await FlutterImageCompress.compressWithList(
+        rawBytes,
+        minWidth: 256,
+        minHeight: 256,
+        quality: 85,
+        format: CompressFormat.jpeg,
+      );
+
+      const fileName = 'avatar.jpg';
+      final storagePath = '${user.id}/$fileName';
+
+      await supabase.storage
+          .from('avatars')
+          .uploadBinary(
+            storagePath,
+            compressed,
+            fileOptions: const FileOptions(
+              upsert: true,
+              contentType: 'image/jpeg',
+            ),
+          );
+
+      final publicUrl = supabase.storage
+          .from('avatars')
+          .getPublicUrl(storagePath);
+      final cacheBustedUrl =
+          '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+
+      await supabase
+          .from('users')
+          .update({'avatar_url': cacheBustedUrl})
+          .eq('id', user.id);
+
+      if (mounted) {
+        setState(() => _avatarUrl = cacheBustedUrl);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Profile photo updated!'),
+            backgroundColor: Color(0xFF4C8077),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Avatar upload error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to upload photo: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingAvatar = false);
     }
+  }
+
+  Future<void> _showEditProfileSheet() async {
+    final nameCtrl = TextEditingController(text: _displayName);
+    // Strip +91 prefix so the field shows only the 10-digit number
+    final rawPhone = _phone.startsWith('+91')
+        ? _phone.substring(3)
+        : _phone.startsWith('91') && _phone.length == 12
+        ? _phone.substring(2)
+        : _phone;
+    final phoneCtrl = TextEditingController(text: rawPhone);
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _EditProfileSheet(
+        nameCtrl: nameCtrl,
+        phoneCtrl: phoneCtrl,
+        onSave: () async {
+          final user = supabase.auth.currentUser;
+          if (user == null) return;
+          // Capture both before the async gap
+          final messenger = ScaffoldMessenger.of(ctx);
+          final nav = Navigator.of(ctx);
+          try {
+            await supabase
+                .from('users')
+                .update({
+                  'name': nameCtrl.text.trim(),
+                  // Always store with +91 prefix
+                  'phone': '+91${phoneCtrl.text.trim()}',
+                })
+                .eq('id', user.id);
+            if (mounted) {
+              setState(() {
+                _displayName = nameCtrl.text.trim();
+                _phone = '+91${phoneCtrl.text.trim()}';
+              });
+              nav.pop();
+              messenger.showSnackBar(
+                const SnackBar(
+                  content: Text('Profile updated!'),
+                  backgroundColor: Color(0xFF6AA39B),
+                ),
+              );
+            }
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('Update failed: $e')));
+            }
+          }
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final addressStore = context.watch<AddressStore>();
-    final selected = addressStore.selectedAddress;
+    final primary = const Color(0xFF6AA39B);
+    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        elevation: 0,
-        centerTitle: true,
-        automaticallyImplyLeading: false,
-        title: const Text("Account", style: TextStyle(color: Colors.black)),
-        backgroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.black),
-      ),
-      body: SafeArea(
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                children: [
-                  //  PROFILE CARD
-                  Container(
-                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+      backgroundColor: theme.scaffoldBackgroundColor,
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : CustomScrollView(
+              slivers: [
+                // ── Premium Profile Header ──────────────────────
+                SliverToBoxAdapter(
+                  child: Container(
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.03),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: isDark
+                            ? [const Color(0xFF2A4A45), const Color(0xFF1A2F2D)]
+                            : [
+                                const Color(0xFF6AA39B),
+                                const Color(0xFF4C8077),
+                              ],
+                      ),
                     ),
-                    child: Row(
-                      children: [
-                        InkWell(
-                          borderRadius: BorderRadius.circular(48),
-                          onTap: _pickProfileImage,
-                          child: Stack(
-                            alignment: Alignment.bottomRight,
-                            children: [
-                              CircleAvatar(
-                                radius: 34,
-                                backgroundColor: const Color(
-                                  0xFF6AA39B,
-                                ).withOpacity(0.12),
-                                backgroundImage: _profileImage != null
-                                    ? FileImage(_profileImage!)
-                                    : null,
-                                child: _profileImage == null
-                                    ? Text(
-                                        _displayName.isNotEmpty
-                                            ? _displayName[0].toUpperCase()
-                                            : "U",
-                                        style: theme.textTheme.headlineMedium
-                                            ?.copyWith(
-                                              color: const Color(0xFF6AA39B),
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                      )
-                                    : null,
-                              ),
-                              Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: const BoxDecoration(
-                                  color: Colors.white,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const CircleAvatar(
-                                  radius: 10,
-                                  backgroundColor: Color(0xFF6AA39B),
-                                  child: Icon(
-                                    Icons.edit,
-                                    size: 12,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+                        child: Column(
+                          children: [
+                            // Top row: title + settings icon
+                            Row(
+                              children: [
+                                Text(
+                                  'My Account',
+                                  style: theme.textTheme.titleLarge?.copyWith(
                                     color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 22,
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _displayName,
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _email,
-                                style: TextStyle(color: Colors.grey[700]),
-                              ),
-                              if (_phone.isNotEmpty) ...[
-                                const SizedBox(height: 2),
-                                Text(
-                                  _phone,
-                                  style: TextStyle(
-                                    color: Colors.grey[600],
-                                    fontSize: 12,
+                                const Spacer(),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.settings_outlined,
+                                    color: Colors.white,
+                                  ),
+                                  onPressed: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const SettingsPage(),
+                                    ),
                                   ),
                                 ),
                               ],
-                            ],
-                          ),
+                            ),
+                            const SizedBox(height: 20),
+                            // Avatar + name row
+                            Row(
+                              children: [
+                                // Avatar
+                                GestureDetector(
+                                  onTap: _isUploadingAvatar
+                                      ? null
+                                      : _pickProfileImage,
+                                  child: Stack(
+                                    children: [
+                                      Container(
+                                        width: 80,
+                                        height: 80,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: Colors.white,
+                                            width: 3,
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withValues(
+                                                alpha: 0.2,
+                                              ),
+                                              blurRadius: 10,
+                                              offset: const Offset(0, 4),
+                                            ),
+                                          ],
+                                        ),
+                                        child: ClipOval(
+                                          child: _isUploadingAvatar
+                                              ? Container(
+                                                  color: Colors.white24,
+                                                  child: const Center(
+                                                    child: SizedBox(
+                                                      width: 24,
+                                                      height: 24,
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                            strokeWidth: 2,
+                                                            color: Colors.white,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                )
+                                              : _profileImage != null
+                                              ? Image.file(
+                                                  _profileImage!,
+                                                  fit: BoxFit.cover,
+                                                )
+                                              : (_avatarUrl != null &&
+                                                    _avatarUrl!.isNotEmpty)
+                                              ? Image.network(
+                                                  _avatarUrl!,
+                                                  fit: BoxFit.cover,
+                                                  errorBuilder: (c, e, _) =>
+                                                      _avatarPlaceholder(
+                                                        primary,
+                                                      ),
+                                                )
+                                              : _avatarPlaceholder(primary),
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 0,
+                                        bottom: 0,
+                                        child: Container(
+                                          width: 26,
+                                          height: 26,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: primary,
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            Icons.camera_alt_rounded,
+                                            size: 14,
+                                            color: primary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        _displayName,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      if (_email.isNotEmpty) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          _email,
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.8,
+                                            ),
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                      if (_phone.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _phone,
+                                          style: TextStyle(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.7,
+                                            ),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                // Edit button
+                                GestureDetector(
+                                  onTap: _showEditProfileSheet,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 7,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.4,
+                                        ),
+                                      ),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.edit_rounded,
+                                          size: 14,
+                                          color: Colors.white,
+                                        ),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Edit',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
                   ),
+                ),
 
-                  const SizedBox(height: 8),
-
-                  //  CONTENT
-                  Expanded(
-                    child: ListView(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                // ── Menu Items ──────────────────────────────────
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SizedBox(height: 8),
-
-                        //  Address Section (Dynamic)
-                        _SectionTile(
-                          title: 'Address',
-                          subtitle: 'Your saved shipping addresses',
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                selected == null
-                                    ? "No address saved yet."
-                                    : selected.fullAddress,
-                                style: const TextStyle(fontSize: 14),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        //  Orders Section (Dynamic)
-                        _SectionTile(
-                          title: 'My Orders',
-                          subtitle: 'View your order history',
-                          child: _ordersLoading
-                              ? const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 10),
-                                  child: Center(
-                                    child: CircularProgressIndicator(),
-                                  ),
-                                )
-                              : _orders.isEmpty
-                              ? const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 10),
-                                  child: Text("No orders found."),
-                                )
-                              : Column(
-                                  children: _orders.map((o) {
-                                    return ListTile(
-                                      contentPadding: EdgeInsets.zero,
-                                      title: Text(
-                                        "Order #${o['id'].toString().length > 6 ? o['id'].toString().substring(0, 6) : o['id']}",
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      subtitle: Text(
-                                        "Status: ${o['status'] ?? 'Pending'}",
-                                      ),
-                                      trailing: Text(
-                                        "₹${o['total'] ?? 0}",
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    );
-                                  }).toList(),
+                        // Section: Account
+                        _sectionLabel('Account'),
+                        const SizedBox(height: 10),
+                        _MenuCard(
+                          items: [
+                            _MenuItem(
+                              icon: Icons.location_on_outlined,
+                              label: 'My Addresses',
+                              color: Colors.blue,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const AddressManagementScreen(),
                                 ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        //  Payment Section (Static placeholder)
-                        const _SimpleExpansionTile(title: "Payment Methods"),
-
-                        const SizedBox(height: 12),
-
-                        //  Settings Section
-                        _SimpleExpansionTile(
-                          title: 'Settings',
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const SettingsPage(),
-                              ),
-                            );
-                          },
-                        ),
-
-                        const SizedBox(height: 24),
-
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () {},
-                                child: const Text("Change Password"),
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: OutlinedButton(
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: Colors.red.shade600,
+                            _MenuItem(
+                              icon: Icons.shopping_bag_outlined,
+                              label: 'My Orders',
+                              color: Colors.orange,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const OrdersPage(),
                                 ),
-                                onPressed: () {},
-                                child: const Text("Delete Account"),
+                              ),
+                            ),
+                            _MenuItem(
+                              icon: Icons.credit_card_outlined,
+                              label: 'Payment Methods',
+                              color: Colors.purple,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const PaymentMethodScreen(
+                                    isCheckout: false,
+                                  ),
+                                ),
                               ),
                             ),
                           ],
                         ),
 
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 20),
 
-                        FilledButton(
-                          onPressed: _handleLogout,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF6AA39B),
-                            minimumSize: const Size.fromHeight(48),
-                          ),
-                          child: const Text("Logout"),
+                        // Section: Preferences
+                        _sectionLabel('Preferences'),
+                        const SizedBox(height: 10),
+                        _MenuCard(
+                          items: [
+                            _MenuItem(
+                              icon: Icons.settings_outlined,
+                              label: 'Settings',
+                              color: Colors.grey,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const SettingsPage(),
+                                ),
+                              ),
+                            ),
+                            _MenuItem(
+                              icon: Icons.headset_mic_outlined,
+                              label: 'Help & Support',
+                              color: Colors.teal,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => SupportWebViewScreen(
+                                    supportUrl: AppConstants.supportUrl,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
 
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 28),
+
+                        // Logout Button
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: OutlinedButton.icon(
+                            onPressed: _handleLogout,
+                            icon: const Icon(Icons.logout_rounded),
+                            label: const Text(
+                              'Logout',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.redAccent,
+                              side: const BorderSide(color: Colors.redAccent),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _avatarPlaceholder(Color primary) {
+    return Container(
+      color: primary.withValues(alpha: 0.15),
+      child: Center(
+        child: Text(
+          _displayName.isNotEmpty ? _displayName[0].toUpperCase() : 'U',
+          style: TextStyle(
+            fontSize: 32,
+            fontWeight: FontWeight.bold,
+            color: primary,
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildAddressBox() {
-    final bool hasAddress =
-        _addressLine1.isNotEmpty ||
-        _addressLine2.isNotEmpty ||
-        _city.isNotEmpty ||
-        _state.isNotEmpty ||
-        _pincode.isNotEmpty;
-
-    if (!hasAddress) {
-      return const Text("No address saved yet.");
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_addressLine1.isNotEmpty)
-          Text(
-            _addressLine1,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-        if (_addressLine2.isNotEmpty) Text(_addressLine2),
-        const SizedBox(height: 6),
-        Text(
-          "${_city.isNotEmpty ? _city : ""}${_city.isNotEmpty && _state.isNotEmpty ? ", " : ""}${_state.isNotEmpty ? _state : ""}",
-        ),
-        if (_pincode.isNotEmpty) Text("Pincode: $_pincode"),
-      ],
-    );
-  }
-
-  Widget _buildOrdersBox() {
-    if (_orders.isEmpty) {
-      return const Text("No orders found.");
-    }
-
-    return Column(
-      children: _orders.take(5).map((o) {
-        final name = o['product_name'] ?? "Product";
-        final price = o['price']?.toString() ?? "0";
-        final status = o['status'] ?? "Pending";
-
-        return ListTile(
-          contentPadding: EdgeInsets.zero,
-          title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text("Status: $status"),
-          trailing: Text(
-            "₹$price",
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-        );
-      }).toList(),
+  Widget _sectionLabel(String label) {
+    return Text(
+      label.toUpperCase(),
+      style: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 1.2,
+        color: Theme.of(
+          context,
+        ).textTheme.bodySmall?.color?.withValues(alpha: 0.5),
+      ),
     );
   }
 }
 
-//  Section Tile
-class _SectionTile extends StatelessWidget {
-  const _SectionTile({
-    required this.title,
-    required this.subtitle,
-    required this.child,
+/* ─────────────── Edit Profile Bottom Sheet ─────────────── */
+
+class _EditProfileSheet extends StatefulWidget {
+  final TextEditingController nameCtrl;
+  final TextEditingController phoneCtrl;
+  final Future<void> Function() onSave;
+
+  const _EditProfileSheet({
+    required this.nameCtrl,
+    required this.phoneCtrl,
+    required this.onSave,
   });
 
-  final String title;
-  final String subtitle;
-  final Widget child;
-
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Card(
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Theme(
-        data: theme.copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          title: Text(
-            title,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          subtitle: Text(
-            subtitle,
-            style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-          ),
-          children: [child],
-        ),
-      ),
-    );
-  }
+  State<_EditProfileSheet> createState() => _EditProfileSheetState();
 }
 
-class _SimpleExpansionTile extends StatelessWidget {
-  const _SimpleExpansionTile({required this.title, this.onTap});
-
-  final String title;
-  final VoidCallback? onTap;
+class _EditProfileSheetState extends State<_EditProfileSheet> {
+  final _formKey = GlobalKey<FormState>();
+  bool _saving = false;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Card(
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-          child: Row(
+    final primary = const Color(0xFF6AA39B);
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(4),
                   ),
                 ),
               ),
-              const Icon(Icons.arrow_forward_ios, size: 14),
+              const SizedBox(height: 20),
+              const Text(
+                'Edit Profile',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 20),
+
+              // ── Name Field (MED-004: no special chars) ──────────────
+              _inputField(
+                context,
+                controller: widget.nameCtrl,
+                label: 'Full Name',
+                icon: Icons.person_outline,
+                maxLength: 50,
+                inputFormatters: [
+                  // Only letters, spaces, dots and hyphens (common in names)
+                  FilteringTextInputFormatter.allow(RegExp(r"[a-zA-Z .\-']")),
+                ],
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) {
+                    return 'Name cannot be empty';
+                  }
+                  final words = v
+                      .trim()
+                      .split(RegExp(r'\s+'))
+                      .where((w) => w.isNotEmpty)
+                      .length;
+                  if (words < 2) {
+                    return 'Enter at least first and last name';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 14),
+
+              // ── Phone Field (digits only, exactly 10 digits, +91 added on save)
+              _inputField(
+                context,
+                controller: widget.phoneCtrl,
+                label: 'Phone Number (+91)',
+                icon: Icons.phone_outlined,
+                keyboardType: TextInputType.phone,
+                maxLength: 10,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(10),
+                ],
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) {
+                    return 'Phone cannot be empty';
+                  }
+                  if (v.trim().length != 10) {
+                    return 'Enter a valid 10-digit number';
+                  }
+                  if (!RegExp(r'^[6-9]\d{9}$').hasMatch(v.trim())) {
+                    return 'Enter a valid Indian mobile number';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 24),
+
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _saving
+                      ? null
+                      : () async {
+                          if (!_formKey.currentState!.validate()) return;
+                          setState(() => _saving = true);
+                          await widget.onSave();
+                          if (mounted) setState(() => _saving = false);
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: _saving
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Save Changes',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                ),
+              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _inputField(
+    BuildContext context, {
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    TextInputType keyboardType = TextInputType.text,
+    int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
+    String? Function(String?)? validator,
+  }) {
+    return TextFormField(
+      controller: controller,
+      keyboardType: keyboardType,
+      maxLength: maxLength,
+      inputFormatters: inputFormatters,
+      validator: validator,
+      autovalidateMode: AutovalidateMode.onUserInteraction,
+      buildCounter:
+          (_, {required currentLength, required isFocused, maxLength}) =>
+              null, // hide character counter
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, size: 20),
+        filled: true,
+        fillColor: Theme.of(context).cardColor,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF6AA39B), width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Colors.red, width: 1.5),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Colors.red, width: 1.5),
+        ),
+      ),
+    );
+  }
+}
+
+/* ─────────────── Menu Card Widget ─────────────── */
+
+class _MenuItem {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _MenuItem({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+}
+
+class _MenuCard extends StatelessWidget {
+  final List<_MenuItem> items;
+
+  const _MenuCard({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: List.generate(items.length, (i) {
+          final item = items[i];
+          return Column(
+            children: [
+              InkWell(
+                onTap: item.onTap,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(i == 0 ? 16 : 0),
+                  topRight: Radius.circular(i == 0 ? 16 : 0),
+                  bottomLeft: Radius.circular(i == items.length - 1 ? 16 : 0),
+                  bottomRight: Radius.circular(i == items.length - 1 ? 16 : 0),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: item.color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(item.icon, size: 20, color: item.color),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          item.label,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        size: 14,
+                        color: theme.textTheme.bodySmall?.color?.withValues(
+                          alpha: 0.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (i < items.length - 1)
+                Divider(
+                  height: 1,
+                  indent: 68,
+                  color: theme.dividerColor.withValues(alpha: 0.5),
+                ),
+            ],
+          );
+        }),
       ),
     );
   }

@@ -1,145 +1,159 @@
 import 'package:flutter/material.dart';
-import 'category_products_page.dart';
-import 'product_filter_sheet.dart';
-import 'b2b_product_filter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:med_shakthi/src/features/category/category_products_page.dart';
+import 'package:med_shakthi/src/features/search/presentation/screens/global_search_page.dart';
+import 'package:med_shakthi/src/features/category/product_filter_sheet.dart';
+import 'package:med_shakthi/src/features/category/b2b_product_filter.dart';
 
-class CategoryPageNew extends StatelessWidget {
+class CategoryPageNew extends StatefulWidget {
   const CategoryPageNew({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    Theme.of(context);
-
-    return Scaffold(
-      backgroundColor: const Color(0xfff7f7f7), // keep current light theme
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        centerTitle: true,
-        automaticallyImplyLeading: false,
-        // leading: IconButton(
-        //   icon: const Icon(Icons.arrow_back, color: Colors.black87),
-        //   onPressed: () => Navigator.pop(context),
-        // ),
-        title: const Text(
-          'Shop by Category',
-          style: TextStyle(
-            color: Colors.black87,
-            fontWeight: FontWeight.w600,
-            fontSize: 18,
-          ),
-        ),
-      ),
-      body: const _CategoryBody(),
-    );
-  }
+  State<CategoryPageNew> createState() => _CategoryPageNewState();
 }
 
-class _CategoryBody extends StatelessWidget {
-  const _CategoryBody();
+class _CategoryPageNewState extends State<CategoryPageNew> {
+  final supabase = Supabase.instance.client;
+  List<CategoryItem> categories = [];
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchCategories();
+  }
+
+  Future<void> _fetchCategories() async {
+    try {
+      // Fetch distinct categories from products table
+      final response = await supabase
+          .from('products')
+          .select('category')
+          .eq('is_active', true)
+          .withConverter<List<String>>((data) {
+            final list = data as List<dynamic>;
+            return list
+                .map((e) => e['category'] as String?)
+                .where((e) => e != null)
+                .cast<String>()
+                .toSet()
+                .toList();
+          });
+
+      if (mounted) {
+        setState(() {
+          categories = response.map((cat) {
+            return CategoryItem(
+              title: cat,
+              icon: _getIconForCategory(cat),
+              skuCountText:
+                  'Explore', // Dynamic count is expensive, simplifying
+              badgeText: 'Available',
+              badgeColor: _getColorForCategory(cat),
+            );
+          }).toList();
+          isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching categories: $e');
+      if (mounted) {
+        // Fallback to static data if error
+        setState(() {
+          categories = [
+            ...corePharmacyCategories,
+            ...personalCareCategories,
+            ...deviceCategories,
+          ];
+          isLoading = false;
+        });
+      }
+    }
+  }
+
+  IconData _getIconForCategory(String category) {
+    final lower = category.toLowerCase();
+    if (lower.contains('medicine')) return Icons.medication;
+    if (lower.contains('vitamin')) return Icons.wb_sunny;
+    if (lower.contains('health')) return Icons.favorite;
+    if (lower.contains('care')) return Icons.spa;
+    if (lower.contains('device')) return Icons.medical_services;
+    if (lower.contains('lab')) return Icons.biotech;
+    if (lower.contains('baby')) return Icons.child_care;
+    if (lower.contains('surgical')) return Icons.local_hospital;
+    return Icons.category;
+  }
+
+  Color _getColorForCategory(String category) {
+    final lower = category.toLowerCase();
+    if (lower.contains('medicine')) return Colors.blue;
+    if (lower.contains('vitamin')) return Colors.orange;
+    if (lower.contains('health')) return Colors.red;
+    if (lower.contains('care')) return Colors.green;
+    if (lower.contains('device')) return Colors.purple;
+    return Colors.teal;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 8.0,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  _SearchAndFilterBar(),
-                  SizedBox(height: 12),
-                  _ShortcutSection(),
-                  SizedBox(height: 16),
-                  _CategoryGroupTitle(title: 'Core Pharmacy'),
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: AppBar(
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+        elevation: 0,
+        centerTitle: true,
+        automaticallyImplyLeading: false,
+        title: Text(
+          'Shop by Category',
+          style: TextStyle(
+            color: Theme.of(context).appBarTheme.foregroundColor,
+            fontWeight: FontWeight.bold,
+            fontSize: 20,
+          ),
+        ),
+      ),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SafeArea(
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16.0,
+                        vertical: 12.0,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          _SearchAndFilterBar(),
+                          SizedBox(height: 20),
+                          _CategoryGroupTitle(title: 'All Categories'),
+                        ],
+                      ),
+                    ),
+                  ),
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    sliver: SliverGrid(
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                            childAspectRatio: 0.85,
+                          ),
+                      delegate: SliverChildBuilderDelegate((context, index) {
+                        final item = categories[index];
+                        return CategoryCard(item: item, index: index);
+                      }, childCount: categories.length),
+                    ),
+                  ),
+                  const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
                 ],
               ),
             ),
-          ),
-
-          // Core Pharmacy grid
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 0.9,
-              ),
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final item = corePharmacyCategories[index];
-                return CategoryCard(item: item);
-              }, childCount: corePharmacyCategories.length),
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 16.0,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [_CategoryGroupTitle(title: 'Personal Care')],
-              ),
-            ),
-          ),
-
-          // Personal care grid
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 0.9,
-              ),
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final item = personalCareCategories[index];
-                return CategoryCard(item: item);
-              }, childCount: personalCareCategories.length),
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 16.0,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [_CategoryGroupTitle(title: 'Devices & Tools')],
-              ),
-            ),
-          ),
-
-          // Devices grid
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 0.9,
-              ),
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final item = deviceCategories[index];
-                return CategoryCard(item: item);
-              }, childCount: deviceCategories.length),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -153,36 +167,57 @@ class _SearchAndFilterBar extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: Container(
-            height: 42,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-            ),
-            child: const TextField(
-              decoration: InputDecoration(
-                hintText: 'Search medicines, categories…',
-                hintStyle: TextStyle(fontSize: 13, color: Colors.grey),
-                prefixIcon: Icon(Icons.search, size: 20),
-                border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
+          child: GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const GlobalSearchPage()),
+              );
+            },
+            child: Container(
+              height: 48,
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: AbsorbPointer(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search medicines, categories…',
+                    hintStyle: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.color?.withValues(alpha: 0.5),
+                    ),
+                    prefixIcon: Icon(
+                      Icons.search,
+                      size: 22,
+                      color: Theme.of(
+                        context,
+                      ).iconTheme.color?.withValues(alpha: 0.6),
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 12),
 
-        /// ✅ FILTER BUTTON (FIXED)
+        /// FILTER BUTTON
         GestureDetector(
           onTap: () async {
             final filters = await showModalBottomSheet<B2BProductFilter>(
@@ -195,79 +230,37 @@ class _SearchAndFilterBar extends StatelessWidget {
             );
 
             if (filters != null) {
-              debugPrint('Applied sort: ${filters.sortBy}');
+              if (!context.mounted) return;
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => GlobalSearchPage(initialFilter: filters),
+                ),
+              );
             }
           },
           child: Container(
-            height: 42,
-            width: 42,
+            height: 48,
+            width: 48,
             decoration: BoxDecoration(
-              color: const Color(0xff2b9c8f),
+              color: const Color(0xFF4C8077),
               borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF4C8077).withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: const Icon(
               Icons.tune_rounded,
               color: Colors.white,
-              size: 20,
+              size: 22,
             ),
           ),
         ),
       ],
-    );
-  }
-}
-
-/// Recently ordered + Popular chips row
-class _ShortcutSection extends StatelessWidget {
-  const _ShortcutSection();
-
-  @override
-  Widget build(BuildContext context) {
-    final shortcuts = [
-      'Recently ordered',
-      'Popular in your area',
-      'Best margins',
-    ];
-
-    return SizedBox(
-      height: 30,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: shortcuts.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xffe0e0e0)),
-            ),
-            child: Row(
-              children: [
-                if (index == 0)
-                  const Icon(Icons.history, size: 14, color: Colors.teal),
-                if (index == 1)
-                  const Icon(
-                    Icons.local_fire_department,
-                    size: 14,
-                    color: Colors.orange,
-                  ),
-                if (index == 2)
-                  const Icon(Icons.trending_up, size: 14, color: Colors.green),
-                const SizedBox(width: 4),
-                Text(
-                  shortcuts[index],
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
     );
   }
 }
@@ -281,48 +274,52 @@ class _CategoryGroupTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       title,
-      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+      style: TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+        color: Theme.of(context).textTheme.titleLarge?.color,
+        letterSpacing: 0.5,
+      ),
     );
   }
 }
 
 /// DATA MODEL
-
 class CategoryItem {
   final String title;
-  final String imageAsset;
+  final IconData icon;
   final String skuCountText; // e.g. "120+ SKUs"
   final String badgeText; // e.g. "Fast moving" / "Offer"
   final Color badgeColor;
 
   CategoryItem({
     required this.title,
-    required this.imageAsset,
+    required this.icon,
     required this.skuCountText,
     required this.badgeText,
     required this.badgeColor,
   });
 }
 
-// Example data: map these to your real categories & images.
+// Fallback Data
 final List<CategoryItem> corePharmacyCategories = [
   CategoryItem(
     title: 'Medicines',
-    imageAsset: 'assets/categories/medicine.png',
+    icon: Icons.medication,
     skuCountText: '450+ SKUs',
     badgeText: 'Fast moving',
     badgeColor: Colors.green.shade600,
   ),
   CategoryItem(
     title: 'Diabetes',
-    imageAsset: 'assets/categories/diabetes.png',
+    icon: Icons.bloodtype,
     skuCountText: '90+ SKUs',
     badgeText: 'High margin',
     badgeColor: Colors.blue.shade600,
   ),
   CategoryItem(
     title: 'BP Monitor',
-    imageAsset: 'assets/categories/bp_monitor.png',
+    icon: Icons.monitor_heart,
     skuCountText: '25 SKUs',
     badgeText: 'Top rated',
     badgeColor: Colors.orange.shade600,
@@ -332,21 +329,21 @@ final List<CategoryItem> corePharmacyCategories = [
 final List<CategoryItem> personalCareCategories = [
   CategoryItem(
     title: 'Face & Beauty',
-    imageAsset: 'assets/categories/face_care.png',
+    icon: Icons.face,
     skuCountText: '120+ SKUs',
     badgeText: 'Up to 20% off',
     badgeColor: Colors.red.shade500,
   ),
   CategoryItem(
     title: 'Hair Care',
-    imageAsset: 'assets/categories/hair_care.png',
+    icon: Icons.content_cut,
     skuCountText: '80+ SKUs',
     badgeText: 'Fast moving',
     badgeColor: Colors.green.shade600,
   ),
   CategoryItem(
-    title: 'Soaps & Bodywash',
-    imageAsset: 'assets/categories/soap.png',
+    title: 'Soaps',
+    icon: Icons.clean_hands,
     skuCountText: '140+ SKUs',
     badgeText: 'Best margins',
     badgeColor: Colors.blue.shade600,
@@ -356,36 +353,35 @@ final List<CategoryItem> personalCareCategories = [
 final List<CategoryItem> deviceCategories = [
   CategoryItem(
     title: 'Thermometer',
-    imageAsset: 'assets/categories/thermometer.png',
+    icon: Icons.thermostat,
     skuCountText: '20 SKUs',
     badgeText: 'Bestseller',
     badgeColor: Colors.orange.shade600,
   ),
   CategoryItem(
     title: 'Oximeter',
-    imageAsset: 'assets/categories/oximeter.png',
+    icon: Icons.monitor_weight_outlined,
     skuCountText: '15 SKUs',
     badgeText: 'Only few left',
     badgeColor: Colors.red.shade500,
   ),
   CategoryItem(
     title: 'Weighing Scale',
-    imageAsset: 'assets/categories/weight_scale.png',
+    icon: Icons.monitor_weight,
     skuCountText: '10 SKUs',
     badgeText: 'New',
     badgeColor: Colors.purple.shade500,
   ),
   CategoryItem(
     title: 'Supplements',
-    imageAsset: 'assets/categories/supplement.png',
+    icon: Icons.medication_liquid,
     skuCountText: '—',
     badgeText: 'Available',
     badgeColor: Colors.green.shade600,
   ),
-
   CategoryItem(
     title: 'Surgical',
-    imageAsset: 'assets/categories/surgical.png',
+    icon: Icons.local_hospital,
     skuCountText: '—',
     badgeText: 'Available',
     badgeColor: Colors.blue.shade600,
@@ -393,95 +389,87 @@ final List<CategoryItem> deviceCategories = [
 ];
 
 /// CATEGORY CARD WIDGET
-
 class CategoryCard extends StatelessWidget {
   final CategoryItem item;
+  final int index;
 
-  const CategoryCard({super.key, required this.item});
+  const CategoryCard({super.key, required this.item, required this.index});
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => CategoryProductsPage(categoryName: item.title),
-          ),
+    // Staggered Entry Animation
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 400 + (index * 100)),
+      tween: Tween(begin: 0.0, end: 1.0),
+      curve: Curves.easeOutQuart,
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, 30 * (1 - value)),
+          child: Opacity(opacity: value, child: child),
         );
       },
-
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 6,
-              offset: const Offset(0, 3),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => CategoryProductsPage(categoryName: item.title),
             ),
-          ],
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const SizedBox(height: 4),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(6.0),
-                child: Image.asset(item.imageAsset, fit: BoxFit.contain),
+          );
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 6.0,
-                vertical: 4.0,
+            ],
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Icon Container
+              Container(
+                height: 60,
+                width: 60,
+                decoration: BoxDecoration(
+                  color: item.badgeColor.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(item.icon, size: 30, color: item.badgeColor),
               ),
-              child: Column(
-                children: [
-                  Text(
-                    item.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Text(
+                  item.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).textTheme.bodyLarge?.color,
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    item.skuCountText,
-                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: item.badgeColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      item.badgeText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w500,
-                        color: item.badgeColor,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 4),
+              Text(
+                item.skuCountText,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.color?.withValues(alpha: 0.6),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

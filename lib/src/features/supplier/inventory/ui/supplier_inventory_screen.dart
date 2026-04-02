@@ -8,7 +8,8 @@ class SupplierInventoryScreen extends StatefulWidget {
   const SupplierInventoryScreen({super.key});
 
   @override
-  State<SupplierInventoryScreen> createState() => _SupplierInventoryScreenState();
+  State<SupplierInventoryScreen> createState() =>
+      _SupplierInventoryScreenState();
 }
 
 class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
@@ -45,26 +46,35 @@ class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
   Future<void> _deleteProduct(String productId) async {
     try {
       await _productRepo.deleteProduct(productId);
+      if (!mounted) return;
       setState(() {}); // Refresh list
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Product deleted successfully')),
       );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error deleting product: $e')),
-      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error deleting product: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        title: const Text('My Inventory', style: TextStyle(color: Colors.black)),
-        backgroundColor: Colors.white,
+        title: Text(
+          'My Inventory',
+          style: TextStyle(
+            color: Theme.of(context).appBarTheme.foregroundColor,
+          ),
+        ),
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: IconThemeData(
+          color: Theme.of(context).appBarTheme.foregroundColor,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
@@ -82,27 +92,27 @@ class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
           : _supplierCode == null
           ? const Center(child: Text("Supplier profile not found"))
           : FutureBuilder<List<Product>>(
-        future: _productRepo.getSupplierProducts(_supplierCode!),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          } else if (snapshot.hasError) {
-            return Center(child: Text("Error: ${snapshot.error}"));
-          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return _buildEmptyState();
-          }
+              future: _productRepo.getSupplierProducts(_supplierCode!),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                } else if (snapshot.hasError) {
+                  return Center(child: Text("Error: ${snapshot.error}"));
+                } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return _buildEmptyState();
+                }
 
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: snapshot.data!.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final product = snapshot.data![index];
-              return _buildInventoryItem(product);
-            },
-          );
-        },
-      ),
+                return ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: snapshot.data!.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final product = snapshot.data![index];
+                    return _buildInventoryItem(product);
+                  },
+                );
+              },
+            ),
     );
   }
 
@@ -110,11 +120,11 @@ class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -144,21 +154,27 @@ class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
               children: [
                 Text(
                   product.name,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'SKU: ${product.id.substring(0, 4)}... • ₹${product.price}',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                  style: TextStyle(
+                    color: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.color?.withValues(alpha: 0.6),
+                    fontSize: 13,
+                  ),
                 ),
               ],
             ),
           ),
           IconButton(
             icon: const Icon(Icons.edit, color: Colors.blue),
-            onPressed: () {
-              // TODO: Navigate to Edit Product Page
-            },
+            onPressed: () => _editProduct(product.id),
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline, color: Colors.red),
@@ -180,16 +196,47 @@ class _SupplierInventoryScreenState extends State<SupplierInventoryScreen> {
             onPressed: () => Navigator.pop(ctx),
             child: const Text("Cancel"),
           ),
-          TextButton(
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
               Navigator.pop(ctx);
               _deleteProduct(productId);
             },
-            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+            child: const Text("Delete"),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _editProduct(String productId) async {
+    try {
+      // 1. Fetch full product details (since ProductModel is lightweight)
+      final data = await _supabase
+          .from('products')
+          .select()
+          .eq('id', productId)
+          .single();
+
+      if (!mounted) return;
+
+      // 2. Navigate to AddProductPage in edit mode
+      // ignore: use_build_context_synchronously
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => AddProductPage(product: data)),
+      );
+
+      // 3. Refresh list after returning
+      setState(() {});
+    } catch (e) {
+      debugPrint("Error fetching product for edit: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error loading product: $e")));
+      }
+    }
   }
 
   Widget _buildEmptyState() {
